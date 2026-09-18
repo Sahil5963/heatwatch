@@ -3,7 +3,7 @@ import SwiftUI
 
 struct RootView: View {
     static let width: CGFloat = 420
-    static let height: CGFloat = 640
+    static let height: CGFloat = 610
 
     @ObservedObject var model: HeatModel
 
@@ -12,9 +12,11 @@ struct RootView: View {
             VStack(spacing: 0) {
                 HeaderView(stats: model.snapshot?.system)
                 ControlsView(model: model)
-                Divider()
                 ProcessListView(model: model)
-                Divider()
+                    .padding(.horizontal, Metrics.margin)
+                IntervalModule(model: model)
+                    .padding(.horizontal, Metrics.margin)
+                    .padding(.top, Metrics.gap)
                 FooterView(model: model)
             }
             if let request = model.pendingKill {
@@ -23,6 +25,9 @@ struct RootView: View {
             }
         }
         .frame(width: Self.width, height: Self.height)
+        // Let the popover's own Liquid Glass show; the list sits on a material box
+        // and the modules are regular glass, so text stays legible without a dark fill.
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.12))
         .animation(.easeOut(duration: 0.15), value: model.pendingKill?.id)
         // Screenshot mode: render controls as active even if another app is frontmost.
         .transformEnvironment(\.controlActiveState) { state in
@@ -35,42 +40,34 @@ struct ControlsView: View {
     @ObservedObject var model: HeatModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Picker("", selection: $model.grouped) {
-                Text("Apps").tag(true)
-                Text("Processes").tag(false)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 150)
+        GlassGroup(spacing: 4) {
+            HStack(spacing: Metrics.gap) {
+                GlassTabs(items: [(true, "Apps"), (false, "Processes")], selection: $model.grouped)
+                GlassTabs(items: [(ListMode.cpu, "CPU"), (.memory, "Memory"), (.gpu, "GPU")], selection: $model.mode)
 
-            Picker("", selection: $model.mode) {
-                Text("CPU").tag(ListMode.cpu)
-                Text("Memory").tag(ListMode.memory)
-                Text("GPU").tag(ListMode.gpu)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 170)
+                Spacer()
 
-            Spacer()
-
-            if model.isSampling {
-                ProgressView().controlSize(.small)
+                // No spinner: inserting one changed the row's height every sample
+                // and shifted the whole list. The icon just dims while sampling.
+                Button {
+                    model.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 14, height: 14)
+                        .opacity(model.isSampling ? 0.4 : 1)
+                }
+                .glassButton()
+                .keyboardShortcut("r", modifiers: .command)
+                .help("Refresh now (⌘R)")
             }
-            Button {
-                model.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .keyboardShortcut("r", modifiers: .command)
-            .help("Refresh now (⌘R)")
         }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8)
+        .padding(.horizontal, Metrics.margin)
+        .padding(.bottom, Metrics.gap)
     }
 }
 
+/// The content layer: a standard-material box, not glass (HIG: keep Liquid
+/// Glass for controls; content sits on standard materials).
 struct ProcessListView: View {
     @ObservedObject var model: HeatModel
 
@@ -139,8 +136,13 @@ struct ProcessListView: View {
                     }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
+            // No implicit animation on refresh: animating the whole lazy list
+            // every sample makes each text change re-layout and flicker over glass.
+            // Order stability comes from smoothing + hysteresis in the model instead.
         }
+        .clipShape(RoundedRectangle(cornerRadius: Metrics.listRadius, style: .continuous))
+        .contentBox(Metrics.listRadius)
     }
 
     /// The bold figure follows the selected tab; the small one is the runner-up.
@@ -174,6 +176,38 @@ struct ProcessListView: View {
     }
 }
 
+/// Control-Center-style bottom module: a label, the current value and a slider.
+struct IntervalModule: View {
+    @ObservedObject var model: HeatModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("Refresh")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("every \(Int(model.interval)) s while open")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "hare")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Slider(value: $model.interval, in: 1...10, step: 1)
+                    .controlSize(.small)
+                Image(systemName: "tortoise")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .glassBox(Metrics.moduleRadius)
+    }
+}
+
 struct FooterView: View {
     @ObservedObject var model: HeatModel
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -202,8 +236,8 @@ struct FooterView: View {
             .fixedSize()
             .help("Launch at Login · Quit")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.horizontal, Metrics.margin + 2)
+        .padding(.vertical, 8)
         .onChange(of: launchAtLogin) { _, on in
             loginError = LoginItem.set(on)
             if loginError != nil { launchAtLogin = LoginItem.isEnabled }

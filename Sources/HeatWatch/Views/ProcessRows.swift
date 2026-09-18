@@ -36,9 +36,12 @@ struct ProcessRowView: View {
                 if let icon {
                     Image(nsImage: icon).resizable().interpolation(.high)
                 } else {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                    ZStack {
+                        Circle().fill(Color.primary.opacity(0.08))
+                        Image(systemName: "gearshape")
+                            .font(.system(size: indent ? 10 : 12))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .frame(width: indent ? 18 : 22, height: indent ? 18 : 22)
@@ -49,7 +52,7 @@ struct ProcessRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -88,10 +91,13 @@ struct ProcessRowView: View {
             .opacity(hover || !canKill ? 1 : 0.5)
             .help(canKill ? "Quit or force-kill" : "Owned by another user — use Activity Monitor with admin rights")
         }
-        .padding(.leading, indent ? 28 : 10)
+        .padding(.leading, indent ? 30 : 10)
         .padding(.trailing, 10)
-        .padding(.vertical, 5)
-        .background(hover ? Color.primary.opacity(0.05) : Color.clear)
+        .padding(.vertical, 6)
+        .background(hover ? Color.primary.opacity(0.06) : Color.clear)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.35).padding(.leading, indent ? 60 : 50)
+        }
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
         .onHover { hover = $0 }

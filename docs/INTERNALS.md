@@ -4,8 +4,10 @@
 
 Nothing is measured while the panel is closed. Opening it shows the last
 snapshot instantly (kept in memory), takes a baseline, and shows fresh figures
-0.8 s later; then it refreshes every 2 s until it closes. `⌘R` / ↻ refreshes
-now. The only background activity is the OS thermal-state notification (push,
+0.8 s later; then it refreshes every 5 s (adjustable 1–10 s with the Refresh
+slider, stored in `refreshInterval`) until it closes. `⌘R` / ↻ refreshes now.
+CPU and GPU figures are exponentially smoothed (newest sample weighted 45%) so
+a one-second spike does not reshuffle the list. The only background activity is the OS thermal-state notification (push,
 not polling), which swaps the flame icon: a template image for nominal/fair,
 orange for serious, red for critical. Measured: closed, 0.01 s of CPU over
 15 s; open, ≈3% of one core.

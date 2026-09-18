@@ -40,19 +40,22 @@ struct KillConfirmView: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
                 }
 
-                HStack(spacing: 10) {
-                    Button("Cancel") { model.cancelKill() }
-                        .keyboardShortcut(.cancelAction)
-                    Button(request.mode.verb, role: .destructive) { model.confirmKill() }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        .tint(request.mode == .force ? .red : .orange)
+                GlassGroup(spacing: 10) {
+                    HStack(spacing: 10) {
+                        Button("Cancel") { model.cancelKill() }
+                            .glassButton()
+                            .keyboardShortcut(.cancelAction)
+                        Button(request.mode.verb, role: .destructive) { model.confirmKill() }
+                            .glassButton(prominent: true)
+                            .tint(request.mode == .force ? .red : .orange)
+                            .keyboardShortcut(.defaultAction)
+                    }
                 }
                 .padding(.top, 4)
             }
-            .padding(18)
-            .frame(width: 310)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(20)
+            .frame(width: 320)
+            .glassBox(Metrics.moduleRadius + 2)
             .shadow(color: .black.opacity(0.3), radius: 18, y: 6)
         }
     }

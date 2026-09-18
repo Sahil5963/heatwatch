@@ -22,6 +22,11 @@ controls to do something about it.
   confirmation. System processes are listed but never touched.
 - **Zero background cost** — it samples only while the panel is open;
   nothing runs when it is closed.
+- **Native look** — Control-Center-style modules in Liquid Glass on macOS 26
+  (glass for controls, standard material for the list, as Apple's guidelines
+  ask), material boxes on macOS 14/15.
+- **Refresh slider** — 1–10 s between samples while the panel is open (default 5); the
+  choice is remembered.
 - Universal (Apple silicon + Intel), no privacy permissions, no Dock icon,
   optional launch at login.
 

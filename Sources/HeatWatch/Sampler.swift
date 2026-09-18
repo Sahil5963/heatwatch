@@ -16,6 +16,11 @@ final class Sampler {
 
     private var prevProc: [pid_t: Prev] = [:]
     private var prevGPU: [pid_t: Prev] = [:]     // ticks = GPU nanoseconds, at = wall nanoseconds
+    /// Exponentially smoothed CPU / GPU per pid. A one-second spike should not
+    /// reshuffle the whole list; sustained load still shows within two samples.
+    private var smoothCPU: [pid_t: Double] = [:]
+    private var smoothGPU: [pid_t: Double] = [:]
+    private let smoothing = 0.45   // weight of the newest sample
     private var identityCache: [pid_t: Identity] = [:]
     private var iconCache: [String: NSImage] = [:]
     private let metrics = SystemMetrics()
@@ -31,7 +36,14 @@ final class Sampler {
     func reset() {
         prevProc.removeAll()
         prevGPU.removeAll()
+        smoothCPU.removeAll()
+        smoothGPU.removeAll()
         metrics.reset()
+    }
+
+    private func smooth(_ raw: Double, previous: Double?) -> Double {
+        guard let p = previous else { return raw }
+        return p + (raw - p) * smoothing
     }
 
     func sample() -> Snapshot {
@@ -40,6 +52,7 @@ final class Sampler {
         var procs: [ProcSnapshot] = []
         procs.reserveCapacity(kinfos.count)
         var next: [pid_t: Prev] = [:]
+        var nextSmoothCPU: [pid_t: Double] = [:]
         var needsPS = false
 
         for var k in kinfos {
@@ -54,7 +67,10 @@ final class Sampler {
                 next[pid] = Prev(ticks: ticks, at: now)
                 var cpu: Double? = nil
                 if let p = prevProc[pid], now > p.at, ticks >= p.ticks {
-                    cpu = Double(ticks - p.ticks) / Double(now - p.at) * 100
+                    let raw = Double(ticks - p.ticks) / Double(now - p.at) * 100
+                    let s = smooth(raw, previous: smoothCPU[pid])
+                    nextSmoothCPU[pid] = s
+                    cpu = s
                 }
                 procs.append(ProcSnapshot(pid: pid, ppid: ppid, uid: uid, name: ident.name, path: ident.path,
                                           icon: ident.icon, cpu: cpu, memory: ru.ri_phys_footprint,
@@ -66,6 +82,7 @@ final class Sampler {
             }
         }
         prevProc = next
+        smoothCPU = nextSmoothCPU
         identityCache = identityCache.filter { key, _ in next[key] != nil || procs.contains { $0.pid == key } }
 
         if needsPS {
@@ -82,17 +99,23 @@ final class Sampler {
         let gpuTime = metrics.gpuClientTime()
         let nowNS = UInt64(Double(now) * tickNanos)
         var nextGPU: [pid_t: Prev] = [:]
+        var nextSmoothGPU: [pid_t: Double] = [:]
         var gpuCount = 0
         for i in procs.indices {
-            guard let t = gpuTime[procs[i].pid] else { continue }
+            let pid = procs[i].pid
+            guard let t = gpuTime[pid] else { continue }
             procs[i].usesGPU = true
             gpuCount += 1
-            nextGPU[procs[i].pid] = Prev(ticks: t, at: nowNS)
-            if let p = prevGPU[procs[i].pid], nowNS > p.at, t >= p.ticks {
-                procs[i].gpu = Double(t - p.ticks) / Double(nowNS - p.at) * 100
+            nextGPU[pid] = Prev(ticks: t, at: nowNS)
+            if let p = prevGPU[pid], nowNS > p.at, t >= p.ticks {
+                let raw = Double(t - p.ticks) / Double(nowNS - p.at) * 100
+                let s = smooth(raw, previous: smoothGPU[pid])
+                nextSmoothGPU[pid] = s
+                procs[i].gpu = s
             }
         }
         prevGPU = nextGPU
+        smoothGPU = nextSmoothGPU
 
         let groups = Self.group(procs)
         return Snapshot(takenAt: Date(), system: metrics.sample(gpuProcessCount: gpuCount),

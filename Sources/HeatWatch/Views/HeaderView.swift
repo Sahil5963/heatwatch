@@ -1,50 +1,55 @@
 import SwiftUI
 
+/// Four compact glass modules: title and big value on the left, the details
+/// right-aligned beside it. The value is coloured only when something is
+/// warm or hot, so a calm machine reads as plain text.
 struct HeaderView: View {
     let stats: SystemStats?
 
     var body: some View {
-        HStack(spacing: 8) {
-            StatTile(
-                title: "CPU",
-                value: stats?.cpuPercent.map { "\(Int($0.rounded()))%" } ?? "—",
-                details: cpuDetails,
-                fraction: (stats?.cpuPercent ?? 0) / 100,
-                tint: Self.loadTint(stats?.cpuPercent, warn: 50, hot: 80))
-            StatTile(
-                title: "GPU",
-                value: stats?.gpuPercent.map { "\(Int($0.rounded()))%" } ?? "—",
-                details: gpuDetails,
-                fraction: (stats?.gpuPercent ?? 0) / 100,
-                tint: Self.loadTint(stats?.gpuPercent, warn: 50, hot: 80))
-            StatTile(
-                title: "Memory",
-                value: stats.map { Self.gb($0.memoryUsed) } ?? "—",
-                details: memoryDetails,
-                fraction: stats.map { Double($0.memoryUsed) / Double(max($0.memoryTotal, 1)) } ?? 0,
-                tint: Self.memoryTint(stats?.memoryFreePercent))
-            StatTile(
-                title: "Heat",
-                value: stats?.dieTempMax.map { String(format: "%.0f°", $0) } ?? (stats?.thermalState.label ?? "—"),
-                details: heatDetails,
-                fraction: stats?.dieTempMax.map { min(1, max(0, ($0 - 40) / 60)) } ?? 0,
-                tint: Self.thermalTint(stats?.thermalState))
+        GlassGroup(spacing: 4) {
+            VStack(spacing: Metrics.gap) {
+                HStack(spacing: Metrics.gap) {
+                    StatModule(
+                        title: "CPU",
+                        value: stats?.cpuPercent.map { "\(Int($0.rounded()))%" } ?? "—",
+                        details: cpuDetails,
+                        tint: Self.loadTint(stats?.cpuPercent, warn: 50, hot: 80))
+                    StatModule(
+                        title: "GPU",
+                        value: stats?.gpuPercent.map { "\(Int($0.rounded()))%" } ?? "—",
+                        details: gpuDetails,
+                        tint: Self.loadTint(stats?.gpuPercent, warn: 50, hot: 80))
+                }
+                HStack(spacing: Metrics.gap) {
+                    StatModule(
+                        title: "Memory",
+                        value: stats.map { Self.gb($0.memoryUsed) } ?? "—",
+                        details: memoryDetails,
+                        tint: Self.memoryTint(stats?.memoryFreePercent))
+                    StatModule(
+                        title: "Heat",
+                        value: stats?.dieTempMax.map { String(format: "%.0f°", $0) } ?? (stats?.thermalState.label ?? "—"),
+                        details: heatDetails,
+                        tint: Self.thermalTint(stats?.thermalState))
+                }
+            }
         }
-        .padding(10)
+        .padding(.horizontal, Metrics.margin)
+        .padding(.top, Metrics.margin)
+        .padding(.bottom, Metrics.gap)
     }
 
-    /// "3.3 / 15 cores" — how much of the machine the percentage actually is.
     private var cpuDetails: [String] {
         guard let s = stats else { return [] }
         var d: [String] = []
         if let p = s.cpuPercent {
-            d.append(String(format: "%.1f / %d cores", p / 100 * Double(s.coreCount), s.coreCount))
+            d.append(String(format: "%.1f of %d cores", p / 100 * Double(s.coreCount), s.coreCount))
         }
         d.append(String(format: "load %.1f", s.loadAverage.first ?? 0))
         return d
     }
 
-    /// "2.4 GB in use" / "16 cores · 98 procs" — what is on the GPU and how big it is.
     private var gpuDetails: [String] {
         guard let s = stats, s.gpuPercent != nil else { return [] }
         var d: [String] = []
@@ -67,7 +72,7 @@ struct HeaderView: View {
     private var heatDetails: [String] {
         guard let s = stats else { return [] }
         var d = [s.thermalState.label]
-        if let avg = s.dieTempAvg { d.append(String(format: "avg %.0f°", avg)) }
+        if let avg = s.dieTempAvg { d.append(String(format: "average %.0f°", avg)) }
         return d
     }
 
@@ -81,22 +86,22 @@ struct HeaderView: View {
         guard let v else { return .secondary }
         if v >= hot { return .red }
         if v >= warn { return .orange }
-        return .accentColor
+        return .primary
     }
 
-    /// Tint follows the kernel's memory-pressure level, not the arithmetic
-    /// "left" figure — cached files count as reclaimable, so pressure can be
-    /// fine while the arithmetic looks tight. That matches Activity Monitor.
+    /// Follows the kernel's memory-pressure level, not the arithmetic "left":
+    /// cached files count as reclaimable, so pressure can be fine while the
+    /// arithmetic looks tight. That matches Activity Monitor.
     static func memoryTint(_ freePercent: Int?) -> Color {
-        guard let f = freePercent else { return .accentColor }
+        guard let f = freePercent else { return .primary }
         if f < 20 { return .red }
         if f < 40 { return .orange }
-        return .accentColor
+        return .primary
     }
 
     static func thermalTint(_ state: ProcessInfo.ThermalState?) -> Color {
         switch state {
-        case .nominal: return .green
+        case .nominal: return .primary
         case .fair: return .yellow
         case .serious: return .orange
         case .critical: return .red
@@ -105,46 +110,40 @@ struct HeaderView: View {
     }
 }
 
-struct StatTile: View {
+struct StatModule: View {
     let title: String
     let value: String
-    let details: [String]   // up to two lines; always laid out as two so tiles match
-    let fraction: Double
+    let details: [String]   // up to two lines, right-aligned beside the value
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            Text(value)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .padding(.bottom, 1)
-            ForEach(0..<2, id: \.self) { i in
-                Text(i < details.count ? details[i] : " ")
-                    .font(.caption2)
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 19, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .foregroundStyle(tint)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.7)
             }
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule().fill(tint)
-                        .frame(width: max(0, min(1, fraction)) * g.size.width)
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 1) {
+                ForEach(0..<2, id: \.self) { i in
+                    Text(i < details.count ? details[i] : " ")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
-            .frame(height: 3)
-            .padding(.top, 3)
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.05)))
+        .glassBox(Metrics.moduleRadius)
     }
 }

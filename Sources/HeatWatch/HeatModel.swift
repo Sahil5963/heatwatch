@@ -19,11 +19,17 @@ struct KillRequest: Identifiable {
 /// showing and closing, so nothing is measured while the panel is hidden.
 @MainActor
 final class HeatModel: ObservableObject {
-    @Published private(set) var snapshot: Snapshot?
+    @Published private(set) var snapshot: Snapshot? { didSet { rebuildLists() } }
     @Published private(set) var isSampling = false
-    @Published var grouped = true
-    @Published var mode: ListMode = .cpu
+    @Published var grouped = true { didSet { rebuildLists() } }
+    @Published var mode: ListMode = .cpu { didSet { rebuildLists() } }
     @Published var expanded: Set<pid_t> = []
+    /// What the list shows, rebuilt once per sample (not per render) with
+    /// order hysteresis so near-ties don't swap places every refresh.
+    @Published private(set) var visibleGroups: [ProcGroup] = []
+    @Published private(set) var visibleProcesses: [ProcSnapshot] = []
+    private var lastGroupOrder: [pid_t: Int] = [:]
+    private var lastProcessOrder: [pid_t: Int] = [:]
     @Published var pendingKill: KillRequest?
     @Published private(set) var notice: String?
 
@@ -32,7 +38,18 @@ final class HeatModel: ObservableObject {
     var captureScenario: String?
     private var captureApplied = false
 
-    let interval: TimeInterval = 2
+    /// Seconds between refreshes while the panel is open (1…10, default 5, remembered).
+    @Published var interval: TimeInterval = HeatModel.storedInterval {
+        didSet {
+            UserDefaults.standard.set(interval, forKey: "refreshInterval")
+            if active, timer != nil { startTimer() }
+        }
+    }
+    private static var storedInterval: TimeInterval {
+        let v = UserDefaults.standard.double(forKey: "refreshInterval")
+        return (1...10).contains(v) ? v : 5
+    }
+
     private let sampler = Sampler()
     private let queue = DispatchQueue(label: "heatwatch.sampler", qos: .userInitiated)
     private var timer: Timer?
@@ -129,30 +146,70 @@ final class HeatModel: ObservableObject {
     // MARK: Derived lists
 
     /// GPU mode lists the processes holding a GPU context, sorted by GPU %.
-    var visibleGroups: [ProcGroup] {
-        guard let s = snapshot else { return [] }
+    private func rebuildLists() {
+        guard let s = snapshot else {
+            visibleGroups = []
+            visibleProcesses = []
+            return
+        }
+        let mode = self.mode
+
         let groups = mode == .gpu ? s.groups.filter { $0.gpuCount > 0 } : s.groups
-        let sorted = groups.sorted {
+        let sortedGroups = groups.sorted {
             switch mode {
             case .cpu: return ($0.cpu, $0.memory) > ($1.cpu, $1.memory)
             case .memory: return $0.memory > $1.memory
             case .gpu: return ($0.gpu, $0.cpu) > ($1.gpu, $1.cpu)
             }
         }
-        return Array(sorted.prefix(40))
-    }
+        let groupKey: (ProcGroup) -> Double = {
+            switch mode {
+            case .cpu: return $0.cpu
+            case .memory: return Double($0.memory)
+            case .gpu: return $0.gpu
+            }
+        }
+        let stableGroups = Self.stabilize(Array(sortedGroups.prefix(40)), key: groupKey,
+                                          previous: lastGroupOrder, memory: mode == .memory)
+        lastGroupOrder = Dictionary(uniqueKeysWithValues: stableGroups.enumerated().map { ($1.id, $0) })
+        visibleGroups = stableGroups
 
-    var visibleProcesses: [ProcSnapshot] {
-        guard let s = snapshot else { return [] }
         let procs = mode == .gpu ? s.processes.filter(\.usesGPU) : s.processes
-        let sorted = procs.sorted {
+        let sortedProcs = procs.sorted {
             switch mode {
             case .cpu: return ($0.cpu ?? 0, $0.memory) > ($1.cpu ?? 0, $1.memory)
             case .memory: return $0.memory > $1.memory
             case .gpu: return ($0.gpu ?? 0, $0.cpu ?? 0) > ($1.gpu ?? 0, $1.cpu ?? 0)
             }
         }
-        return Array(sorted.prefix(60))
+        let procKey: (ProcSnapshot) -> Double = {
+            switch mode {
+            case .cpu: return $0.cpu ?? 0
+            case .memory: return Double($0.memory)
+            case .gpu: return $0.gpu ?? 0
+            }
+        }
+        let stableProcs = Self.stabilize(Array(sortedProcs.prefix(60)), key: procKey,
+                                         previous: lastProcessOrder, memory: mode == .memory)
+        lastProcessOrder = Dictionary(uniqueKeysWithValues: stableProcs.enumerated().map { ($1.id, $0) })
+        visibleProcesses = stableProcs
+    }
+
+    /// Order hysteresis: if two neighbours have swapped since the last sample
+    /// but the gap between them is small (1 point or 15% for percentages, 8%
+    /// for memory), keep their previous order. Stops near-ties from flickering.
+    private static func stabilize<T: Identifiable>(_ items: [T], key: (T) -> Double,
+                                                    previous: [T.ID: Int], memory: Bool) -> [T] where T.ID == pid_t {
+        guard items.count > 1 else { return items }
+        var out = items
+        for i in 1..<out.count {
+            let upper = out[i - 1], lower = out[i]
+            guard let pu = previous[upper.id], let pl = previous[lower.id], pl < pu else { continue }
+            let ku = key(upper), kl = key(lower)
+            let tolerance = memory ? ku * 0.08 : max(1.0, ku * 0.15)
+            if ku - kl <= tolerance { out.swapAt(i - 1, i) }
+        }
+        return out
     }
 
     func toggleExpanded(_ pid: pid_t) {
@@ -162,7 +219,7 @@ final class HeatModel: ObservableObject {
     var statusLine: String {
         guard let s = snapshot else { return "Sampling only while this panel is open" }
         let t = s.takenAt.formatted(date: .omitted, time: .standard)
-        return "Sampled \(t) · live every \(Int(interval)) s while open, idle when closed"
+        return "Sampled \(t) · nothing runs while the panel is closed"
     }
 
     // MARK: Kill flow (always confirmed first)

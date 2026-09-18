@@ -30,6 +30,16 @@ final class SystemMetrics {
     private var hidClient: AnyObject?
     private var tempServices: [AnyObject] = []
     private var hidProbed = false
+    private var smoothCPU: Double?
+    private var smoothGPU: Double?
+
+    /// Same smoothing as the per-process figures, so the tiles and the list agree.
+    private func smooth(_ raw: Double?, _ previous: inout Double?) -> Double? {
+        guard let raw else { return previous }
+        let s = previous.map { $0 + (raw - $0) * 0.45 } ?? raw
+        previous = s
+        return s
+    }
 
     init() {
         var ps: vm_size_t = 0
@@ -44,7 +54,11 @@ final class SystemMetrics {
         coreCount = ProcessInfo.processInfo.activeProcessorCount
     }
 
-    func reset() { prevHost = nil }
+    func reset() {
+        prevHost = nil
+        smoothCPU = nil
+        smoothGPU = nil
+    }
 
     func sample(gpuProcessCount: Int?) -> SystemStats {
         var la = [Double](repeating: 0, count: 3)
@@ -52,10 +66,10 @@ final class SystemMetrics {
         let temps = temperatures()
         let gpu = gpuReading()
         return SystemStats(
-            cpuPercent: hostCPU(),
+            cpuPercent: smooth(hostCPU(), &smoothCPU),
             coreCount: coreCount,
             loadAverage: la,
-            gpuPercent: gpu.utilization,
+            gpuPercent: smooth(gpu.utilization, &smoothGPU),
             gpuMemoryInUse: gpu.memoryInUse,
             gpuCoreCount: gpuCoreCount,
             gpuProcessCount: gpuProcessCount,
