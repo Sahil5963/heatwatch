@@ -16,7 +16,7 @@ mkdir -p shots .build
 swiftc -O Tools/shoot.swift -o .build/shoot 2>&1 | grep -v warning || true
 
 SCENARIOS=("$@")
-(( ${#SCENARIOS[@]} )) || SCENARIOS=(cpu memory gpu expanded confirm)
+(( ${#SCENARIOS[@]} )) || SCENARIOS=(cpu memory gpu issues selected expanded confirm)
 FLAGS=()
 [[ "${SHADOW:-1}" == 0 ]] && FLAGS+=(--no-shadow)
 [[ "${ICON:-1}" == 0 ]] && FLAGS+=(--no-icon)

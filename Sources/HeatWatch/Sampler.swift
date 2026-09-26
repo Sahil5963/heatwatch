@@ -9,9 +9,12 @@ final class Sampler {
     private struct Prev { let ticks: UInt64; let at: UInt64 }
     private struct Identity {
         let start: Int
+        let startedAt: Date?
         let name: String
         let path: String?
         let icon: NSImage?
+        let isApp: Bool
+        let automation: AutomationKind?
     }
 
     private var prevProc: [pid_t: Prev] = [:]
@@ -24,6 +27,11 @@ final class Sampler {
     private var identityCache: [pid_t: Identity] = [:]
     private var iconCache: [String: NSImage] = [:]
     private let metrics = SystemMetrics()
+    private let launchd = LaunchdRegistry()
+    private let responsiveness = ResponsivenessProbe()
+    private let argsReader = ProcArgsReader()
+    /// When each group root first crossed the "pegged" level while the panel was open.
+    private var peggedSince: [pid_t: Date] = [:]
     private let ownUID = getuid()
     private let tickNanos: Double
 
@@ -38,6 +46,8 @@ final class Sampler {
         prevGPU.removeAll()
         smoothCPU.removeAll()
         smoothGPU.removeAll()
+        peggedSince.removeAll()
+        launchd.reset()
         metrics.reset()
     }
 
@@ -48,6 +58,7 @@ final class Sampler {
 
     func sample() -> Snapshot {
         let now = mach_continuous_time()   // same timebase as rusage tick counters
+        let wall = Date()
         let kinfos = Self.listProcesses()
         var procs: [ProcSnapshot] = []
         procs.reserveCapacity(kinfos.count)
@@ -59,8 +70,9 @@ final class Sampler {
             let pid = k.kp_proc.p_pid
             let ppid = k.kp_eproc.e_ppid
             let uid = k.kp_eproc.e_ucred.cr_uid
-            let ident = identity(for: pid, kinfo: &k)
             let isOwn = uid == ownUID
+            let ident = identity(for: pid, kinfo: &k, own: isOwn)
+            let unresponsive = isOwn && ident.isApp && responsiveness.isUnresponsive(pid)
 
             if isOwn, let ru = Self.rusage(pid) {
                 let ticks = ru.ri_user_time + ru.ri_system_time
@@ -73,12 +85,16 @@ final class Sampler {
                     cpu = s
                 }
                 procs.append(ProcSnapshot(pid: pid, ppid: ppid, uid: uid, name: ident.name, path: ident.path,
-                                          icon: ident.icon, cpu: cpu, memory: ru.ri_phys_footprint,
-                                          source: .native, isOwn: true))
+                                          icon: ident.icon, startedAt: ident.startedAt, cpu: cpu,
+                                          memory: ru.ri_phys_footprint, cpuSeconds: Double(ticks) * tickNanos / 1e9,
+                                          source: .native, isOwn: true, isApp: ident.isApp,
+                                          automation: ident.automation, unresponsive: unresponsive))
             } else {
                 needsPS = true
                 procs.append(ProcSnapshot(pid: pid, ppid: ppid, uid: uid, name: ident.name, path: ident.path,
-                                          icon: ident.icon, cpu: nil, memory: 0, source: .ps, isOwn: isOwn))
+                                          icon: ident.icon, startedAt: ident.startedAt, cpu: nil, memory: 0,
+                                          cpuSeconds: 0, source: .ps, isOwn: isOwn, isApp: ident.isApp,
+                                          automation: ident.automation))
             }
         }
         prevProc = next
@@ -91,6 +107,7 @@ final class Sampler {
                 if let s = ps[procs[i].pid] {
                     procs[i].cpu = s.cpu
                     procs[i].memory = s.rssKB * 1024
+                    procs[i].cpuSeconds = s.cpuSeconds
                 }
             }
         }
@@ -117,14 +134,29 @@ final class Sampler {
         prevGPU = nextGPU
         smoothGPU = nextSmoothGPU
 
-        let groups = Self.group(procs)
-        return Snapshot(takenAt: Date(), system: metrics.sample(gpuProcessCount: gpuCount),
+        // Generic automation flags only count when the parent is outside the browser's own bundle.
+        let parents = Dictionary(procs.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        for i in procs.indices where procs[i].automation != nil {
+            if !Diagnostics.keepsAutomation(procs[i], parent: parents[procs[i].ppid]) { procs[i].automation = nil }
+        }
+
+        // Orphans: our direct children of launchd that launchd does not manage.
+        launchd.update(candidates: procs.filter {
+            $0.isOwn && $0.ppid == 1 && ($0.age(at: wall) ?? 0) >= Diagnostics.orphanMinAge
+        }.map(\.pid))
+        for i in procs.indices where procs[i].isOwn && procs[i].ppid == 1 {
+            procs[i].orphaned = Diagnostics.isOrphan(procs[i], launchd: launchd, at: wall)
+        }
+        for i in procs.indices { procs[i].issues = Diagnostics.issues(for: procs[i], at: wall) }
+
+        let groups = group(procs, at: wall)
+        return Snapshot(takenAt: wall, system: metrics.sample(gpuProcessCount: gpuCount),
                         processes: procs, groups: groups)
     }
 
     // MARK: - Grouping
 
-    private static func group(_ procs: [ProcSnapshot]) -> [ProcGroup] {
+    private func group(_ procs: [ProcSnapshot], at wall: Date) -> [ProcGroup] {
         let byPid = Dictionary(procs.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
         func root(of pid: pid_t) -> pid_t {
             var cur = pid
@@ -137,16 +169,26 @@ final class Sampler {
         }
         var members: [pid_t: [ProcSnapshot]] = [:]
         for p in procs { members[root(of: p.pid), default: []].append(p) }
-        return members.compactMap { rootPid, list in
+        var stillPegged: Set<pid_t> = []
+        let groups: [ProcGroup] = members.compactMap { rootPid, list in
             guard let r = byPid[rootPid] else { return nil }
             let sorted = list.sorted { ($0.cpu ?? 0, $0.memory) > ($1.cpu ?? 0, $1.memory) }
-            return ProcGroup(root: r, members: sorted)
+            var g = ProcGroup(root: r, members: sorted)
+            if g.cpu >= Diagnostics.peggedCPU {
+                if peggedSince[rootPid] == nil { peggedSince[rootPid] = wall }
+                stillPegged.insert(rootPid)
+            }
+            let streak = stillPegged.contains(rootPid) ? peggedSince[rootPid].map { wall.timeIntervalSince($0) } : nil
+            g.issues = Diagnostics.issues(for: g, peggedFor: streak, at: wall)
+            return g
         }
+        peggedSince = peggedSince.filter { stillPegged.contains($0.key) }
+        return groups
     }
 
-    // MARK: - Identity (name, path, icon), cached per pid + start time
+    // MARK: - Identity (name, path, icon, start time, automation kind), cached per pid + start time
 
-    private func identity(for pid: pid_t, kinfo k: inout kinfo_proc) -> Identity {
+    private func identity(for pid: pid_t, kinfo k: inout kinfo_proc, own: Bool) -> Identity {
         let start = Int(k.kp_proc.p_un.__p_starttime.tv_sec)
         if let cached = identityCache[pid], cached.start == start { return cached }
 
@@ -162,11 +204,13 @@ final class Sampler {
         if pid == 0 { name = "kernel_task" }
 
         var icon: NSImage? = nil
+        var isApp = false
         if let app = NSRunningApplication(processIdentifier: pid) {
+            isApp = true
             if let n = app.localizedName, !n.isEmpty { name = n }
             icon = app.icon
         }
-        if icon == nil, let path, let bundle = Self.outermostAppBundle(in: path) {
+        if icon == nil, let bundle = Diagnostics.outermostAppBundle(in: path) {
             if let cached = iconCache[bundle] {
                 icon = cached
             } else {
@@ -175,15 +219,16 @@ final class Sampler {
                 icon = img
             }
         }
-        let id = Identity(start: start, name: name, path: path, icon: icon)
+        let startedAt = start > 0
+            ? Date(timeIntervalSince1970: Double(start) + Double(k.kp_proc.p_un.__p_starttime.tv_usec) / 1e6)
+            : nil
+        // Arguments are readable for our own processes only; that is where the
+        // scripted browsers live anyway.
+        let args = own && pid > 0 ? argsReader.arguments(of: pid) : []
+        let id = Identity(start: start, startedAt: startedAt, name: name, path: path, icon: icon, isApp: isApp,
+                          automation: Diagnostics.automation(path: path, args: args))
         identityCache[pid] = id
         return id
-    }
-
-    /// `/Applications/Foo.app/Contents/Frameworks/Bar.app/...` → `/Applications/Foo.app`
-    private static func outermostAppBundle(in path: String) -> String? {
-        guard let r = path.range(of: ".app/") else { return nil }
-        return String(path[..<r.lowerBound]) + ".app"
     }
 
     // MARK: - Kernel queries
@@ -211,24 +256,43 @@ final class Sampler {
 
     /// One `ps` for the processes libproc won't show us. %cpu here is the
     /// kernel's decaying average, not our exact interval — good enough for
-    /// daemons, and the only unprivileged way to see them.
-    private static func psStats() -> [pid_t: (cpu: Double, rssKB: UInt64)] {
+    /// daemons, and the only unprivileged way to see them. `time` is the
+    /// cumulative CPU time (`MMMM:SS.cc`), which feeds the lifetime average.
+    private static func psStats() -> [pid_t: (cpu: Double, rssKB: UInt64, cpuSeconds: Double)] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/ps")
-        p.arguments = ["-Ao", "pid=,%cpu=,rss="]
+        p.arguments = ["-Ao", "pid=,%cpu=,rss=,time="]
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return [:] }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        var out: [pid_t: (cpu: Double, rssKB: UInt64)] = [:]
+        var out: [pid_t: (cpu: Double, rssKB: UInt64, cpuSeconds: Double)] = [:]
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 3, let pid = pid_t(parts[0]),
+            guard parts.count >= 4, let pid = pid_t(parts[0]),
                   let cpu = Double(parts[1]), let rss = UInt64(parts[2]) else { continue }
-            out[pid] = (cpu, rss)
+            out[pid] = (cpu, rss, cpuTime(parts[3]))
         }
         return out
+    }
+
+    /// "1459:46.61" → seconds; also tolerates "H:MM:SS.cc" and a "D-" day prefix.
+    private static func cpuTime(_ field: Substring) -> Double {
+        var text = field
+        var days = 0.0
+        if let dash = text.firstIndex(of: "-"), let d = Double(text[..<dash]) {
+            days = d
+            text = text[text.index(after: dash)...]
+        }
+        let parts = text.split(separator: ":").reversed().map { Double($0) ?? 0 }
+        var seconds = days * 86400
+        var unit = 1.0
+        for v in parts {
+            seconds += v * unit
+            unit *= 60
+        }
+        return seconds
     }
 }

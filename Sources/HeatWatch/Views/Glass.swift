@@ -78,8 +78,10 @@ struct GlassTabs<Value: Hashable>: View {
                 let selected = item.value == selection
                 Text(item.label)
                     .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.7))
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background {
                         if selected {

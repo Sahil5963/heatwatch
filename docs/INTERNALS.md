@@ -41,10 +41,34 @@ child of `launchd`). Chrome and its helpers, a terminal and everything it
 spawned, an automation daemon and the browser it launched — each is one row.
 Group kills signal the helpers first and the root last.
 
+## Issues
+
+Every snapshot is classified after grouping (`Diagnostics.swift`); nothing
+extra runs in the background and no permission is asked. Per tree, most
+severe first:
+
+| Issue | Signal | Severity |
+|---|---|---|
+| not responding | WindowServer's own verdict (`CGSEventIsAppUnresponsive`, private SkyLight API, resolved with `dlsym`; absent → never flagged). WindowServer only judges an app with events waiting, so a hung app is flagged ≈15 s after someone clicks or hovers it. | hot |
+| burning | lifetime CPU (`ri_user_time + ri_system_time`, or `ps time` for other users' processes) ÷ age ≥ 0.5 cores, age ≥ 10 min | hot from 1 core and 1 h |
+| pegged | tree ≥ 90 % CPU (smoothed) for ≥ 30 s while the panel is open | hot from 5 min |
+| automation | a known tool by path (agent-browser, Playwright, Puppeteer, chromedriver/geckodriver/…, Selenium, Lighthouse), or a real browser binary launched with `--remote-debugging-*`, `--headless`, `--enable-automation` or a temp-dir `--user-data-dir`. Generic flags are ignored on Electron/node binaries and on helpers whose parent is in the same `.app` (an app driving its own embedded renderer is not automation). Arguments come from `KERN_PROCARGS2`, own processes only. | info, warn ≥ 1 h, hot ≥ 1 day |
+| orphaned / idle | own direct child of launchd that `launchctl list` does not know (its terminal, agent or script exited), not a system binary, not inside a bundle, ≥ 2 min old. "idle" when it has averaged < 1 % and is quiet now. | warn |
+
+`launchctl list` is spawned only when an unjudged launchd child old enough to
+judge appears. Multi-kill: ticked rows are tree roots in Apps mode or pids in
+Processes mode; switching the toggle clears them; the confirmation card lists
+what is included. `HEATWATCH_DUMP_ISSUES=1` prints the flagged trees of the
+first full sample and quits — the quickest way to check the classifier
+against a real machine.
+
+`ps %cpu` on macOS is the kernel's decaying average, not a lifetime figure;
+the lifetime average here is computed from cumulative CPU time.
+
 ## Screenshots
 
 ```sh
-Tools/capture.sh                # shots/{cpu,memory,gpu,expanded,confirm}.png
+Tools/capture.sh                # shots/{cpu,memory,gpu,issues,selected,expanded,confirm}.png
 SHADOW=0 ICON=0 Tools/capture.sh gpu
 ```
 
@@ -62,7 +86,9 @@ above the arrow. Retina resolution (2×). `ICON_BLACK=1` for light backgrounds.
 ./build.sh --dist      # dist/HeatWatch-<version>.dmg + .zip
 ```
 
-The binary is universal (Apple silicon + Intel), signed ad-hoc unless
+If Xcode's licence has not been accepted (`swift --version` says so), the
+script builds with the Command Line Tools and borrows Xcode's SwiftUI macro
+plugin, which the CLT do not ship. The binary is universal (Apple silicon + Intel), signed ad-hoc unless
 `CODESIGN_IDENTITY="Developer ID Application: …"` is set, in which case the
 hardened runtime is enabled and `./notarize.sh` can notarize and staple the
 DMG (one-time `notarytool store-credentials` setup is described in the

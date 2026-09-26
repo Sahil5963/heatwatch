@@ -2,7 +2,7 @@
 # Build HeatWatch and assemble build/HeatWatch.app (no Xcode project needed).
 #   ./build.sh            build only
 #   ./build.sh --run      build, relaunch
-#   ./build.sh --install  build, copy to ~/Applications
+#   ./build.sh --install  build, replace the installed copy, relaunch
 #   ./build.sh --dist     build, package dist/HeatWatch-<version>.dmg and .zip
 #
 # The binary is universal (arm64 + x86_64). Signing is ad-hoc unless
@@ -11,14 +11,25 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Xcode's toolchain refuses to run until its licence has been accepted
+# (sudo xcodebuild -license); the Command Line Tools build this just as well.
+# The Command Line Tools ship without the SwiftUI macro plugin, so borrow
+# Xcode's copy (same compiler build) when it is there.
+EXTRA=()
+if ! swift --version >/dev/null 2>&1 && [[ -d /Library/Developer/CommandLineTools ]]; then
+  export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+  PLUGINS=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins
+  [[ -d $PLUGINS ]] && EXTRA=(-Xswiftc -plugin-path -Xswiftc "$PLUGINS")
+fi
+
 APP=build/HeatWatch.app
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
 ARCHS=(--arch arm64 --arch x86_64)
 
 [[ -f Resources/AppIcon.icns ]] || swift Tools/make-icon.swift
 
-swift build -c release "${ARCHS[@]}" 2>&1 | grep -Ev '^\s*$' | tail -3
-BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)/HeatWatch"
+swift build -c release "${ARCHS[@]}" "${EXTRA[@]}" 2>&1 | grep -Ev '^\s*$' | tail -3
+BIN="$(swift build -c release "${ARCHS[@]}" "${EXTRA[@]}" --show-bin-path)/HeatWatch"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -39,10 +50,14 @@ case "${1:-}" in
     open "$APP"
     ;;
   --install)
-    mkdir -p ~/Applications
-    rm -rf ~/Applications/HeatWatch.app
-    cp -R "$APP" ~/Applications/HeatWatch.app
-    echo "installed ~/Applications/HeatWatch.app"
+    # Replace the copy that is already installed (/Applications if it is there,
+    # otherwise ~/Applications) and relaunch it.
+    if [[ -d /Applications/HeatWatch.app ]]; then DEST=/Applications/HeatWatch.app; else mkdir -p ~/Applications; DEST=~/Applications/HeatWatch.app; fi
+    pkill -x HeatWatch 2>/dev/null || true
+    rm -rf "$DEST"
+    cp -R "$APP" "$DEST"
+    open "$DEST"
+    echo "installed $DEST"
     ;;
   --dist)
     mkdir -p dist

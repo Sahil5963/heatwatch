@@ -8,7 +8,7 @@ A quick *what is heating up my Mac?* monitor for the menu bar — with the
 controls to do something about it.
 
 <p align="center">
-  <img src="docs/screenshot.png" width="460" alt="HeatWatch panel showing CPU, GPU, memory and heat, with the hottest apps listed">
+  <img src="docs/screenshot.png" width="520" alt="HeatWatch panel showing CPU, GPU, memory and heat, with the hottest apps listed">
 </p>
 
 ## Features
@@ -18,8 +18,15 @@ controls to do something about it.
 - **Real culprits, not helpers** — processes are grouped under the app that
   owns them, so Chrome and its thirty helpers are one row. Expand to look inside.
 - **CPU · Memory · GPU** — sort by any of them, per-process GPU % included.
+- **Issues** — the things that quietly cook a Mac: scripted browsers that were
+  never closed (agent-browser, Playwright, Puppeteer, WebDriver, any Chrome with
+  a remote-debugging port) with how long they have run, apps that stopped
+  responding, orphaned leftovers whose terminal is gone, and processes that
+  have averaged half a core or more since they started. Flagged rows also wear
+  a small pill in the other tabs.
 - **Quit or force-kill** a process or a whole app tree, always behind a
-  confirmation. System processes are listed but never touched.
+  confirmation. Tick several rows (or *Select all* on the Issues tab) to end
+  them in one go. System processes are listed but never touched.
 - **Zero background cost** — it samples only while the panel is open;
   nothing runs when it is closed.
 - **Native look** — Control-Center-style modules in Liquid Glass on macOS 26

@@ -1,20 +1,37 @@
 import AppKit
 import SwiftUI
 
+extension Severity {
+    var color: Color {
+        switch self {
+        case .hot: return .red
+        case .warn: return .orange
+        case .info: return .secondary
+        }
+    }
+}
+
 /// One row. The bold number on the right is whatever the selected tab is
 /// about (CPU %, memory, or GPU %); the small one underneath is the next most
-/// useful thing.
+/// useful thing. A flagged row carries a small pill after its name. The left
+/// column is the expand chevron, or a tick box once a selection is under way
+/// (or the pointer is over the row).
 struct ProcessRowView: View {
     let icon: NSImage?
     let title: String
     let subtitle: String
+    let badge: Issue?
     let primary: String
     let primaryColor: Color
     let secondary: String
     let chevron: String?
     let indent: Bool
     let canKill: Bool
+    let selectable: Bool
+    let selected: Bool
+    let selectionActive: Bool
     let onTap: (() -> Void)?
+    let onSelect: (() -> Void)?
     let onKill: (KillMode) -> Void
 
     @State private var hover = false
@@ -22,7 +39,15 @@ struct ProcessRowView: View {
     var body: some View {
         HStack(spacing: 8) {
             Group {
-                if let chevron {
+                if selectable, selectionActive || hover || selected {
+                    Button { onSelect?() } label: {
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                    }
+                    .buttonStyle(.plain)
+                    .help(selected ? "Remove from selection" : "Add to selection")
+                } else if let chevron {
                     Image(systemName: chevron)
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -30,7 +55,7 @@ struct ProcessRowView: View {
                     Color.clear
                 }
             }
-            .frame(width: 10)
+            .frame(width: 14)
 
             Group {
                 if let icon {
@@ -47,14 +72,27 @@ struct ProcessRowView: View {
             .frame(width: indent ? 18 : 22, height: indent ? 18 : 22)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: indent ? 12 : 12.5, weight: indent ? .regular : .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: indent ? 12 : 12.5, weight: indent ? .regular : .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let badge {
+                        Text(badge.short)
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(badge.severity.color.opacity(badge.severity == .info ? 0.10 : 0.16)))
+                            .foregroundStyle(badge.severity.color)
+                            .layoutPriority(1)
+                    }
+                }
                 Text(subtitle)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             Spacer(minLength: 6)
@@ -94,7 +132,7 @@ struct ProcessRowView: View {
         .padding(.leading, indent ? 30 : 10)
         .padding(.trailing, 10)
         .padding(.vertical, 6)
-        .background(hover ? Color.primary.opacity(0.06) : Color.clear)
+        .background(selected ? Color.accentColor.opacity(0.10) : hover ? Color.primary.opacity(0.06) : Color.clear)
         .overlay(alignment: .bottom) {
             Divider().opacity(0.35).padding(.leading, indent ? 60 : 50)
         }
